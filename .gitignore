@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+catalog/*.xml
+db/
+.DS_Store
+venv/
+*.egg-info/
+
+# Local test images
+*.jpeg
+*.jpg
+*.png
