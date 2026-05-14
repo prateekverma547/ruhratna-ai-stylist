@@ -20,19 +20,20 @@ This file is a snapshot for picking up the project in a fresh Claude thread. It 
 - **`temperature=0`** on every Gemini call for consistency between runs.
 - **`v1alpha`** API version explicitly set on the genai client (`http_options={"api_version": "v1alpha"}`) — required to access the newer model IDs.
 - **URL cross-reference:** after Gemini returns recommendations, `match.py` overwrites `image_url` and `product_url` from `catalog_products.json` keyed on `product_id`. So even if the model paraphrases or hallucinates a URL, the response carries the authoritative `ruhratna.com` link.
+- **Async polling for `/match`**, not synchronous. `POST /match` generates a UUID `job_id`, spawns a background thread that runs `match_jewellery`, and returns `{"job_id": "..."}` with `202 Accepted` immediately. The client then polls `GET /result/<job_id>` until status is `done` or `error`. Avoids hitting reverse-proxy/CDN timeouts on the ~19s Gemini call and keeps the request worker free to serve other traffic while the Gemini round trip is in flight. Jobs live in an in-memory dict (`jobs`) guarded by a `threading.Lock`; the `/result` endpoint deletes the entry on the fetch that returns the final outcome (no TTL — jobs persist until claimed, lost on worker restart). In production we run the gunicorn `gevent` worker class, which monkey-patches `threading`, so `threading.Thread` becomes a cooperative greenlet and `match_jewellery`'s `requests`-based Gemini call yields the event loop on I/O.
 
 ## What is built
 
 - **`catalog.py`** — offline preparation script. Run manually (or via cron later). Reads the XML feed, filters out `Gift Cards`, `Hot Pick Any 5 @ 1999`, `Combo`, and out-of-stock items. Writes `catalog_products.json` and `catalog_formatted.txt`.
 - **`analyse.py`** — Call 1. Takes `(image_base64, occasion)`, returns the structured outfit dict. Has a CLI test block: `python analyse.py img.jpg office`.
 - **`match.py`** — Call 2. Takes `(outfit_analysis, occasion)`, returns `{stylist_reading, recommendations, complete_look}`. Cross-references URLs. Has a CLI test block with a hardcoded black-saree sample.
-- **`app.py`** — Flask REST API: `POST /analyse`, `POST /match`, `GET /health`. CORS enabled for all origins. `preload_catalog()` runs at import time.
-- **Deployment plumbing** — `Procfile`, `runtime.txt` (Python 3.11.0), `.railwayignore`, `gunicorn` in `requirements.txt`. Railway-ready.
+- **`app.py`** — Flask REST API. `POST /analyse` (sync, ~6s blocking) and `GET /health` are normal blocking endpoints. `POST /match` is asynchronous: it queues a job and returns a `job_id`. `GET /result/<job_id>` polls the job state and returns `running` / `done` / `error`. Done and errored jobs are deleted on fetch. CORS enabled for all origins. `preload_catalog()` runs at module-import time so the first request isn't slow.
+- **Deployment plumbing** — `Procfile` (gunicorn + gevent worker class, 2 workers × 100 connections, 120s timeout), `runtime.txt` (Python 3.11.9), `.railwayignore`, `gevent` + `gunicorn` in `requirements.txt`.
+- **Live on Railway** — deployed from this repo on the `main` branch. Env vars set in the Railway dashboard.
 
 ## What is NOT built yet
 
 - **WordPress plugin** — the frontend that will live on `ruhratna.com/ai-stylist`. Not started.
-- **Railway deployment** — files are ready, repo isn't pushed yet.
 - **Cron job** for catalog refresh — `catalog.py` exists, but no schedule wired up.
 - **Custom domain setup** on Railway — pending deployment.
 - **`test/test_outfit.py`** — placeholder file, not populated.
@@ -43,15 +44,29 @@ This file is a snapshot for picking up the project in a fresh Claude thread. It 
 - `/match` → ~19 seconds (heavier prompt, larger output, `gemini-2.5-pro`)
 - User-facing flow: outfit reading appears at ~6s, recommendations at ~25s total
 
-The 60-second gunicorn timeout in `Procfile` accommodates this with headroom.
+The 120-second gunicorn timeout in `Procfile` accommodates this with generous headroom. The user-facing wait is also gated by the WordPress plugin's polling interval (~2s), so a typical end-to-end `/match` round trip is ~21–22s wall-clock.
+
+## Railway deployment setup
+
+Railway uses its default Nixpacks builder — there's no `railway.json` or `nixpacks.toml`. It just picks up the files in the repo root and builds.
+
+- **`ai-stylist-backend/` IS the repo root.** No monorepo subdir config needed on the Railway side.
+- **`Procfile`** — `web: gunicorn app:app --worker-class gevent --workers 2 --worker-connections 100 --timeout 120 --bind 0.0.0.0:$PORT`. Two `gevent` workers × 100 cooperative greenlet connections each (~200 concurrent in-flight requests). 120s worker timeout protects against a stuck Gemini call. `gevent` monkey-patches `threading`, which is what makes the background-thread polling pattern in `app.py` actually cooperative under load (greenlets that yield on I/O) rather than spawning real OS threads.
+- **`runtime.txt`** — `python-3.11.9`. Started at `python-3.11.0` but Railway's Nixpacks didn't resolve that exact patch, so it was bumped. Don't downgrade without re-testing the build.
+- **`.railwayignore`** — excludes `.env`, `__pycache__/`, `*.pyc`, `venv/`, images (`*.jpeg` / `*.jpg` / `*.png`), and `*.xml` so the source product feed and local test images stay out of the build context. Mirrors `.gitignore` roughly but isn't a substitute for it — both files exist independently.
+- **Env vars are set in the Railway dashboard, not via `.env`.** The dashboard is the source of truth in production; `.env` is local-dev only and excluded from both git and the Railway build context. The five keys to set: `GEMINI_API_KEY`, `ANALYSE_MODEL_PRIMARY`, `ANALYSE_MODEL_FALLBACK`, `MATCH_MODEL_PRIMARY`, `MATCH_MODEL_FALLBACK`. `PORT` is injected automatically by Railway and read by the Procfile's `$PORT`.
+- **CORS** is permissive (`CORS(app)` in `app.py`, no origin allowlist) so the WordPress plugin can call from any origin once deployed. Tighten later if needed.
+- **Catalog artifacts ship in the repo.** `catalog/catalog_products.json` and `catalog/catalog_formatted.txt` are committed so Railway doesn't need to run `catalog.py` at deploy time. If the WooCommerce feed changes, regenerate locally (`python catalog.py`) and commit the refreshed artifacts before redeploying. The source XML is gitignored and railwayignored — only the prepared artifacts travel with deploys.
 
 ## Current status
 
 Backend POC is **complete and tested locally**. Both endpoints have been smoke-tested via Flask test client and via real Gemini calls. The fallback chain has been exercised in practice (saw `gemini-2.5-pro` 503 once, `gemini-2.5-flash-lite` took over cleanly).
 
-**Immediate next step:** push `ai-stylist-backend/` to GitHub → deploy on Railway → set env vars in dashboard → confirm `/health` from the Railway URL.
+**Repository:** [github.com/prateekverma547/ruhratna-ai-stylist](https://github.com/prateekverma547/ruhratna-ai-stylist) (main branch). The `ai-stylist-backend/` directory is the repo root.
 
-**After that:** build the WordPress plugin.
+**Deployment:** Live on Railway, deployed from `main`. The five env keys (`GEMINI_API_KEY`, `ANALYSE_MODEL_PRIMARY`, `ANALYSE_MODEL_FALLBACK`, `MATCH_MODEL_PRIMARY`, `MATCH_MODEL_FALLBACK`) are set in the Railway dashboard. `/health` confirms model and product-count state.
+
+**Immediate next step:** build the WordPress plugin against the deployed Railway URL, using the polling pattern for `/match` (POST → `job_id` → poll `/result/<job_id>`).
 
 ## WordPress plugin plan
 
@@ -59,11 +74,11 @@ Backend POC is **complete and tested locally**. Both endpoints have been smoke-t
 - **Page:** `ruhratna.com/ai-stylist`
 - **Flow** (4 screens already mockuped):
   1. Upload outfit photo + pick occasion
-  2. Loading → call `/analyse`, show outfit reading when it returns (~6s)
-  3. Loading → call `/match` in parallel/after, show recommendations grid + `complete_look` card if `suggested: true`
+  2. Loading → `POST /analyse`, show outfit reading when it returns (~6s)
+  3. Loading → `POST /match` to get a `job_id`, then poll `GET /result/<job_id>` (every ~2s) until `status === "done"`. Render the recommendations grid + `complete_look` card if `suggested: true`. On `status === "error"`, surface the error message and offer a retry.
   4. Final styled output with "Add to cart" links to the WooCommerce product pages
 
-The plugin needs to know the Railway base URL (env var or plugin setting) and call the two endpoints in sequence. CORS is already permissive on the API side.
+The plugin needs to know the Railway base URL (plugin setting) and the polling interval. CORS is already permissive on the API side.
 
 ## Key files
 
@@ -74,8 +89,8 @@ The plugin needs to know the Railway base URL (env var or plugin setting) and ca
 | `catalog/catalog_formatted.txt` | LLM-ready catalog string. Embedded into match prompt. Committed. |
 | `.env` | Real API keys. Never committed. |
 | `.env.example` | Template listing all 7 required env keys. |
-| `Procfile` | `gunicorn app:app --workers 2 --timeout 60 --bind 0.0.0.0:$PORT` |
-| `runtime.txt` | `python-3.11.0` |
+| `Procfile` | `gunicorn app:app --worker-class gevent --workers 2 --worker-connections 100 --timeout 120 --bind 0.0.0.0:$PORT` |
+| `runtime.txt` | `python-3.11.9` |
 
 ## Conventions worth knowing
 

@@ -1,5 +1,6 @@
 flask
 flask-cors
+gevent>=23.9.1
 google-genai
 gunicorn
 python-dotenv
