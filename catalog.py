@@ -11,11 +11,14 @@ Not imported by the API server. Standalone.
 """
 
 import json
+import logging
 import os
 import xml.etree.ElementTree as ET
 from typing import Optional
 
 import requests
+
+log = logging.getLogger(__name__)
 
 SOURCE_PATH = "catalog/recommendationeng.xml"
 OUTPUT_JSON = "catalog/catalog_products.json"
@@ -115,10 +118,11 @@ def main() -> None:
     with open(OUTPUT_TEXT, "w", encoding="utf-8") as f:
         f.write(format_for_llm(products))
 
-    print(f"✅ Catalog ready: {len(products)} products")
-    print(f"✅ Saved: {OUTPUT_JSON}")
-    print(f"✅ Saved: {OUTPUT_TEXT}")
+    log.info("Catalog ready: %d products", len(products))
+    log.info("Saved: %s", OUTPUT_JSON)
+    log.info("Saved: %s", OUTPUT_TEXT)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     main()

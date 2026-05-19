@@ -11,10 +11,18 @@ Lets the API stay well under reverse-proxy timeouts on the slower
 Gemini call.
 """
 
+import logging
 import os
 import threading
 import time
 import uuid
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    force=True,
+)
+log = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request
@@ -73,9 +81,7 @@ def _run_match(
         match_model = result.get("model_used", MATCH_MODEL) if isinstance(result, dict) else MATCH_MODEL
         confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
 
-        print(f"[logger] Calling log_session for job {job_id}", flush=True)
-        import sys
-        print("[logger] ABOUT TO CALL log_session", flush=True, file=sys.stderr)
+        log.info("Calling log_session for job %s", job_id)
         log_session(
             session_id=job_id,
             occasion=occasion,

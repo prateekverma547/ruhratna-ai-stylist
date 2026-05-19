@@ -8,6 +8,7 @@ describe the outfit, and returns a structured dict the matcher can use.
 import base64
 import io
 import json
+import logging
 import os
 import time
 
@@ -16,6 +17,8 @@ from google import genai
 from PIL import Image
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ANALYSE_MODEL_PRIMARY = os.getenv("ANALYSE_MODEL_PRIMARY")
@@ -81,10 +84,10 @@ def analyse_outfit(image_base64: str, occasion: str) -> dict:
             except Exception as e:
                 last_error = e
                 if attempt < 2:
-                    print(f"[{model}] Attempt {attempt + 1} failed, retrying in 3s...")
+                    log.error("[%s] Attempt %d failed, retrying in 3s...", model, attempt + 1)
                     time.sleep(3)
                     continue
-                print(f"[{model}] All retries exhausted: {str(e)}")
+                log.error("[%s] All retries exhausted: %s", model, str(e))
         else:
             continue
         break
@@ -117,9 +120,11 @@ def analyse_outfit(image_base64: str, occasion: str) -> dict:
 if __name__ == "__main__":
     import sys
 
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
     if len(sys.argv) < 2:
-        print("Usage: python analyse.py <image_path> [occasion]")
-        print("Example: python analyse.py test/saree.jpg wedding")
+        log.info("Usage: python analyse.py <image_path> [occasion]")
+        log.info("Example: python analyse.py test/saree.jpg wedding")
         sys.exit(1)
 
     image_path = sys.argv[1]
@@ -128,9 +133,9 @@ if __name__ == "__main__":
     with open(image_path, "rb") as f:
         image_b64 = base64.b64encode(f.read()).decode()
 
-    print(f"Analysing outfit from: {image_path}")
-    print(f"Occasion: {occasion}")
-    print("Calling Gemini...\n")
+    log.info("Analysing outfit from: %s", image_path)
+    log.info("Occasion: %s", occasion)
+    log.info("Calling Gemini...")
 
     result = analyse_outfit(image_b64, occasion)
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    log.info("%s", json.dumps(result, indent=2, ensure_ascii=False))

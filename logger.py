@@ -10,14 +10,16 @@ and Railway worker shutdown is never held up.
 import base64
 import io
 import json
+import logging
 import os
 import threading
-import traceback
 from datetime import datetime, timezone
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+
+log = logging.getLogger(__name__)
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
@@ -109,25 +111,24 @@ def _do_log(
     match_time: float,
     confidence_flag: str,
 ) -> None:
-    import sys
-    print("[logger] _do_log() ENTERED", flush=True, file=sys.stderr)
-    print(f"[logger] _do_log started for session {session_id}", flush=True)
+    log.info("_do_log() ENTERED")
+    log.info("_do_log started for session %s", session_id)
     try:
         folder_id = os.getenv("DRIVE_FOLDER_ID")
         sheets_id = os.getenv("SHEETS_ID")
         if not folder_id or not sheets_id:
-            print("[logger] DRIVE_FOLDER_ID or SHEETS_ID not set — skipping session log", flush=True)
+            log.error("DRIVE_FOLDER_ID or SHEETS_ID not set — skipping session log")
             return
 
         creds = _get_credentials()
-        print("[logger] Credentials loaded successfully", flush=True)
+        log.info("Credentials loaded successfully")
 
         drive = build("drive", "v3", credentials=creds, cache_discovery=False)
         sheets = build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
 
-        print("[logger] Attempting Drive upload...", flush=True)
+        log.info("Attempting Drive upload...")
         drive_url = _upload_image(drive, image_base64, session_id, folder_id)
-        print(f"[logger] Drive upload success: {drive_url}", flush=True)
+        log.info("Drive upload success: %s", drive_url)
 
         recommendations = match_result.get("recommendations", []) if isinstance(match_result, dict) else []
         complete_look = match_result.get("complete_look", {}) if isinstance(match_result, dict) else {}
@@ -150,14 +151,13 @@ def _do_log(
             json.dumps(recommendations, ensure_ascii=False),
         ]
 
-        print("[logger] Attempting Sheets write...", flush=True)
+        log.info("Attempting Sheets write...")
         _ensure_header(sheets, sheets_id)
         _append_row(sheets, sheets_id, row)
-        print("[logger] Sheets write success", flush=True)
-        print(f"[logger] session {session_id} logged", flush=True)
-    except Exception as e:
-        print(f"[logger] failed to log session {session_id}: {e}", flush=True)
-        print(traceback.format_exc(), flush=True)
+        log.info("Sheets write success")
+        log.info("session %s logged", session_id)
+    except Exception:
+        log.exception("failed to log session %s", session_id)
 
 
 def log_session(
@@ -173,9 +173,8 @@ def log_session(
     confidence_flag: str,
 ) -> None:
     """Spawn a daemon thread to log the session. Returns immediately."""
-    import sys
-    print("[logger] log_session() ENTERED", flush=True, file=sys.stderr)
-    print("[logger] log_session() called, spawning thread...", flush=True)
+    log.info("log_session() ENTERED")
+    log.info("log_session() called, spawning thread...")
     thread = threading.Thread(
         target=_do_log,
         args=(

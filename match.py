@@ -7,6 +7,7 @@ and returns a stylist response dict.
 """
 
 import json
+import logging
 import os
 import time
 
@@ -14,6 +15,8 @@ from dotenv import load_dotenv
 from google import genai
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MATCH_MODEL_PRIMARY = os.getenv("MATCH_MODEL_PRIMARY")
@@ -44,9 +47,9 @@ def preload_catalog() -> None:
         with open(CATALOG_JSON_PATH, "r", encoding="utf-8") as f:
             products = json.load(f)
         _product_lookup = {p["id"]: p for p in products if "id" in p}
-        print(f"✅ Catalog preloaded: {len(_product_lookup)} products")
+        log.info("Catalog preloaded: %d products", len(_product_lookup))
     except FileNotFoundError as e:
-        print(f"⚠️  Catalog file missing: {e.filename}. Run catalog.py first.")
+        log.error("Catalog file missing: %s. Run catalog.py first.", e.filename)
 
 
 def get_product_count() -> int:
@@ -199,10 +202,10 @@ def match_jewellery(outfit_analysis: dict, occasion: str) -> dict:
             except Exception as e:
                 last_error = e
                 if attempt < 2:
-                    print(f"[{model}] Attempt {attempt + 1} failed, retrying in 3s...")
+                    log.error("[%s] Attempt %d failed, retrying in 3s...", model, attempt + 1)
                     time.sleep(3)
                     continue
-                print(f"[{model}] All retries exhausted: {str(e)}")
+                log.error("[%s] All retries exhausted: %s", model, str(e))
         else:
             continue
         break
@@ -233,6 +236,8 @@ def match_jewellery(outfit_analysis: dict, occasion: str) -> dict:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
     sample_outfit = {
         "outfit_type": "saree",
         "dominant_colour": "black",
@@ -246,29 +251,31 @@ if __name__ == "__main__":
         "colour_accents": [],
     }
 
-    print("Finding jewellery matches...")
-    print("Occasion: office\n")
+    log.info("Finding jewellery matches...")
+    log.info("Occasion: office")
 
     result = match_jewellery(sample_outfit, "office")
 
     if "error" in result:
-        print(f"Error: {result['error']}")
+        log.error("Error: %s", result["error"])
         if "details" in result:
-            print(f"Details: {result['details']}")
+            log.error("Details: %s", result["details"])
     else:
-        print(f"Stylist says: {result['stylist_reading']}\n")
+        log.info("Stylist says: %s", result["stylist_reading"])
         for i, rec in enumerate(result["recommendations"], 1):
-            print(f"#{i} [tier {rec.get('tier')} · {rec.get('type')}] — {rec['title']} ({rec['match_score']}% match)")
-            print(f"     Price: ₹{rec['price']}")
-            print(f"     Why: {rec['reason']}")
-            print(f"     URL: {rec['product_url']}")
-            print()
+            log.info(
+                "#%d [tier %s · %s] — %s (%s%% match)",
+                i, rec.get("tier"), rec.get("type"), rec["title"], rec["match_score"],
+            )
+            log.info("     Price: ₹%s", rec["price"])
+            log.info("     Why: %s", rec["reason"])
+            log.info("     URL: %s", rec["product_url"])
 
         look = result.get("complete_look", {})
         if look.get("suggested"):
-            print("Complete look suggested:")
-            print(f"     Pieces: {', '.join(look.get('pieces', []))}")
-            print(f"     Combined price: ₹{look.get('combined_price')}")
-            print(f"     Why: {look.get('look_description')}")
+            log.info("Complete look suggested:")
+            log.info("     Pieces: %s", ", ".join(look.get("pieces", [])))
+            log.info("     Combined price: ₹%s", look.get("combined_price"))
+            log.info("     Why: %s", look.get("look_description"))
         else:
-            print("Complete look: not suggested for this outfit")
+            log.info("Complete look: not suggested for this outfit")
