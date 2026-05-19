@@ -13,6 +13,7 @@ Gemini call.
 
 import os
 import threading
+import time
 import uuid
 
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from analyse import analyse_outfit
+from logger import log_session
 from match import get_product_count, match_jewellery, preload_catalog
 
 load_dotenv()
@@ -37,10 +39,19 @@ jobs = {}
 jobs_lock = threading.Lock()
 
 
-def _run_match(job_id: str, outfit_analysis: dict, occasion: str) -> None:
-    """Background worker: runs match_jewellery and stores the outcome under job_id."""
+def _run_match(
+    job_id: str,
+    outfit_analysis: dict,
+    occasion: str,
+    image_b64: str,
+    analyse_time: float,
+) -> None:
+    """Background worker: runs match_jewellery, stores the outcome, and fires async session log."""
     try:
+        match_start = time.time()
         result = match_jewellery(outfit_analysis, occasion)
+        match_time = time.time() - match_start
+
         with jobs_lock:
             if "error" in result:
                 jobs[job_id] = {
@@ -54,6 +65,26 @@ def _run_match(job_id: str, outfit_analysis: dict, occasion: str) -> None:
                     "result": result,
                     "error": None,
                 }
+
+        if "error" in result or not image_b64:
+            return
+
+        analyse_model = outfit_analysis.get("model_used", ANALYSE_MODEL) if isinstance(outfit_analysis, dict) else ANALYSE_MODEL
+        match_model = result.get("model_used", MATCH_MODEL) if isinstance(result, dict) else MATCH_MODEL
+        confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
+
+        log_session(
+            session_id=job_id,
+            occasion=occasion,
+            image_base64=image_b64,
+            outfit_analysis=outfit_analysis,
+            match_result=result,
+            analyse_model=analyse_model,
+            match_model=match_model,
+            analyse_time=analyse_time,
+            match_time=match_time,
+            confidence_flag=confidence_flag,
+        )
     except Exception as e:
         with jobs_lock:
             jobs[job_id] = {
@@ -74,9 +105,15 @@ def analyse():
 
         occasion = data.get("occasion", "festive")
 
+        analyse_start = time.time()
         outfit_analysis = analyse_outfit(image_b64, occasion)
+        analyse_elapsed = time.time() - analyse_start
+
         if "error" in outfit_analysis:
             return jsonify(outfit_analysis), 400
+
+        if isinstance(outfit_analysis, dict):
+            outfit_analysis["_analyse_time"] = analyse_elapsed
 
         return jsonify({
             "success": True,
@@ -97,6 +134,10 @@ def match():
             return jsonify({"error": "outfit_analysis field is required"}), 400
 
         occasion = data.get("occasion", "festive")
+        image_b64 = data.get("image", "")
+        analyse_time = 0.0
+        if isinstance(outfit_analysis, dict):
+            analyse_time = float(outfit_analysis.get("_analyse_time", 0.0) or 0.0)
 
         job_id = str(uuid.uuid4())
         with jobs_lock:
@@ -104,7 +145,7 @@ def match():
 
         thread = threading.Thread(
             target=_run_match,
-            args=(job_id, outfit_analysis, occasion),
+            args=(job_id, outfit_analysis, occasion, image_b64, analyse_time),
             daemon=True,
         )
         thread.start()
