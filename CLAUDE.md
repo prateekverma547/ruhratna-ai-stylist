@@ -20,7 +20,7 @@ This file is a snapshot for picking up the project in a fresh Claude thread. It 
 - **`temperature=0`** on every Gemini call for consistency between runs.
 - **`v1alpha`** API version explicitly set on the genai client (`http_options={"api_version": "v1alpha"}`) — required to access the newer model IDs.
 - **URL cross-reference:** after Gemini returns recommendations, `match.py` overwrites `image_url` and `product_url` from `catalog_products.json` keyed on `product_id`. So even if the model paraphrases or hallucinates a URL, the response carries the authoritative `ruhratna.com` link.
-- **Async polling for `/match`**, not synchronous. `POST /match` generates a UUID `job_id`, spawns a background thread that runs `match_jewellery`, and returns `{"job_id": "..."}` with `202 Accepted` immediately. The client then polls `GET /result/<job_id>` until status is `done` or `error`. Avoids hitting reverse-proxy/CDN timeouts on the ~19s Gemini call and keeps the request worker free to serve other traffic while the Gemini round trip is in flight. Jobs live in an in-memory dict (`jobs`) guarded by a `threading.Lock`; the `/result` endpoint deletes the entry on the fetch that returns the final outcome (no TTL — jobs persist until claimed, lost on worker restart). In production we run the gunicorn `gevent` worker class, which monkey-patches `threading`, so `threading.Thread` becomes a cooperative greenlet and `match_jewellery`'s `requests`-based Gemini call yields the event loop on I/O.
+- **Async polling for `/match`**, not synchronous. **Status: DONE — live on Railway and working end-to-end.** `POST /match` generates a UUID `job_id`, spawns a background thread that runs `match_jewellery`, and returns `{"job_id": "..."}` with `202 Accepted` immediately. The client then polls `GET /result/<job_id>` until status is `done` or `error`. Avoids hitting reverse-proxy/CDN timeouts on the ~19s Gemini call and keeps the request worker free to serve other traffic while the Gemini round trip is in flight. Jobs live in an in-memory dict (`jobs`) guarded by a `threading.Lock`; the `/result` endpoint deletes the entry on the fetch that returns the final outcome (no TTL — jobs persist until claimed, lost on worker restart). In production we run the gunicorn `gevent` worker class, which monkey-patches `threading`, so `threading.Thread` becomes a cooperative greenlet and `match_jewellery`'s `requests`-based Gemini call yields the event loop on I/O.
 
 ## What is built
 
@@ -29,7 +29,7 @@ This file is a snapshot for picking up the project in a fresh Claude thread. It 
 - **`match.py`** — Call 2. Takes `(outfit_analysis, occasion)`, returns `{stylist_reading, recommendations, complete_look}`. Cross-references URLs. Has a CLI test block with a hardcoded black-saree sample.
 - **`app.py`** — Flask REST API. `POST /analyse` (sync, ~6s blocking) and `GET /health` are normal blocking endpoints. `POST /match` is asynchronous: it queues a job and returns a `job_id`. `GET /result/<job_id>` polls the job state and returns `running` / `done` / `error`. Done and errored jobs are deleted on fetch. CORS enabled for all origins. `preload_catalog()` runs at module-import time so the first request isn't slow.
 - **Deployment plumbing** — `Procfile` (gunicorn + gevent worker class, 2 workers × 100 connections, 120s timeout), `runtime.txt` (Python 3.11.9), `.railwayignore`, `gevent` + `gunicorn` in `requirements.txt`.
-- **Live on Railway** — deployed from this repo on the `main` branch. Env vars set in the Railway dashboard.
+- **Live on Railway** — **DONE.** Deployed from this repo on the `main` branch. Live URL: <https://web-production-8b1fc.up.railway.app>. Env vars set in the Railway dashboard.
 
 ## What is NOT built yet
 
@@ -64,9 +64,9 @@ Backend POC is **complete and tested locally**. Both endpoints have been smoke-t
 
 **Repository:** [github.com/prateekverma547/ruhratna-ai-stylist](https://github.com/prateekverma547/ruhratna-ai-stylist) (main branch). The `ai-stylist-backend/` directory is the repo root.
 
-**Deployment:** Live on Railway, deployed from `main`. The five env keys (`GEMINI_API_KEY`, `ANALYSE_MODEL_PRIMARY`, `ANALYSE_MODEL_FALLBACK`, `MATCH_MODEL_PRIMARY`, `MATCH_MODEL_FALLBACK`) are set in the Railway dashboard. `/health` confirms model and product-count state.
+**Deployment:** **DONE — live on Railway** at <https://web-production-8b1fc.up.railway.app>, deployed from `main`. The five env keys (`GEMINI_API_KEY`, `ANALYSE_MODEL_PRIMARY`, `ANALYSE_MODEL_FALLBACK`, `MATCH_MODEL_PRIMARY`, `MATCH_MODEL_FALLBACK`) are set in the Railway dashboard. `/health` confirms model and product-count state.
 
-**Immediate next step:** build the WordPress plugin against the deployed Railway URL, using the polling pattern for `/match` (POST → `job_id` → poll `/result/<job_id>`).
+**Immediate next step:** build the WordPress plugin. Plugin should target the live Railway URL above and use the polling pattern for `/match` (POST → `job_id` → poll `/result/<job_id>`).
 
 ## WordPress plugin plan
 
