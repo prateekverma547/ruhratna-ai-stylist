@@ -73,6 +73,7 @@ def _run_match(
         match_model = result.get("model_used", MATCH_MODEL) if isinstance(result, dict) else MATCH_MODEL
         confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
 
+        print(f"[logger] Calling log_session for job {job_id}", flush=True)
         log_session(
             session_id=job_id,
             occasion=occasion,
