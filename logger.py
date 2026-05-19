@@ -109,6 +109,8 @@ def _do_log(
     match_time: float,
     confidence_flag: str,
 ) -> None:
+    import sys
+    print("[logger] _do_log() ENTERED", flush=True, file=sys.stderr)
     print(f"[logger] _do_log started for session {session_id}", flush=True)
     try:
         folder_id = os.getenv("DRIVE_FOLDER_ID")
@@ -171,6 +173,8 @@ def log_session(
     confidence_flag: str,
 ) -> None:
     """Spawn a daemon thread to log the session. Returns immediately."""
+    import sys
+    print("[logger] log_session() ENTERED", flush=True, file=sys.stderr)
     print("[logger] log_session() called, spawning thread...", flush=True)
     thread = threading.Thread(
         target=_do_log,

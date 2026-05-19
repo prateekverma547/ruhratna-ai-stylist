@@ -74,6 +74,8 @@ def _run_match(
         confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
 
         print(f"[logger] Calling log_session for job {job_id}", flush=True)
+        import sys
+        print("[logger] ABOUT TO CALL log_session", flush=True, file=sys.stderr)
         log_session(
             session_id=job_id,
             occasion=occasion,
