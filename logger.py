@@ -1,7 +1,7 @@
 """
 Two-stage session logger for Ruhratna AI Stylist.
 
-Stage 1 (log_analyse_session): /analyse uploads the outfit image to Drive
+Stage 1 (log_analyse_session): /analyse uploads the outfit image to imgbb
 and appends a new Sessions row with the analyse-side columns filled and
 the match-side columns left blank.
 
@@ -14,24 +14,23 @@ raised to the caller. Logging never delays the user response or holds
 up Railway worker shutdown.
 """
 
-import base64
-import io
 import json
 import logging
 import os
 import threading
 from datetime import datetime, timezone
 
+import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 log = logging.getLogger(__name__)
 
 SCOPES = [
-    "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
+
+IMGBB_UPLOAD_URL = "https://api.imgbb.com/1/upload"
 
 SHEET_TAB = "Sessions"
 
@@ -45,7 +44,7 @@ HEADER_ROW = [
     "Analyse Time (s)",                    # E
     "Confidence Flag",                     # F
     "Outfit Analysis (JSON)",              # G
-    "Drive Image URL",                     # H
+    "Image URL",                           # H
     "Match Model",                         # I
     "Match Time (s)",                      # J
     "Num Recommendations",                 # K
@@ -68,30 +67,24 @@ def _sheets_client():
     return build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
 
 
-def _drive_client():
-    creds = _get_credentials()
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
-
-
-def _upload_image(drive, image_base64: str, session_id: str, folder_id: str) -> str:
-    image_bytes = base64.b64decode(image_base64)
-    media = MediaIoBaseUpload(
-        io.BytesIO(image_bytes),
-        mimetype="image/jpeg",
-        resumable=False,
-    )
-    metadata = {"name": f"{session_id}.jpg", "parents": [folder_id]}
-    created = drive.files().create(
-        body=metadata,
-        media_body=media,
-        fields="id, webViewLink",
-    ).execute()
-    file_id = created["id"]
-    drive.permissions().create(
-        fileId=file_id,
-        body={"type": "anyone", "role": "reader"},
-    ).execute()
-    return created.get("webViewLink", "")
+def _upload_to_imgbb(image_base64: str, session_id: str) -> str:
+    """POST the base64 image to imgbb. Returns the direct URL, or "" on failure."""
+    try:
+        api_key = os.getenv("IMGBB_API_KEY")
+        if not api_key:
+            log.warning("IMGBB_API_KEY not set — skipping image upload")
+            return ""
+        response = requests.post(
+            IMGBB_UPLOAD_URL,
+            params={"key": api_key, "name": session_id},
+            data={"image": image_base64},
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()["data"]["url"]
+    except Exception:
+        log.warning("imgbb upload failed for session %s", session_id, exc_info=True)
+        return ""
 
 
 def _ensure_header(sheets, spreadsheet_id: str) -> None:
@@ -131,19 +124,17 @@ def _do_log_analyse(
 ) -> None:
     log.info("_do_log_analyse started for session %s", session_id)
     try:
-        folder_id = os.getenv("DRIVE_FOLDER_ID")
         sheets_id = os.getenv("SHEETS_ID")
-        if not folder_id or not sheets_id:
-            log.error("DRIVE_FOLDER_ID or SHEETS_ID not set — skipping analyse log")
+        if not sheets_id:
+            log.error("SHEETS_ID not set — skipping analyse log")
             return
 
-        drive = _drive_client()
         sheets = _sheets_client()
         log.info("Credentials loaded successfully")
 
-        log.info("Attempting Drive upload...")
-        drive_url = _upload_image(drive, image_base64, session_id, folder_id)
-        log.info("Drive upload success: %s", drive_url)
+        log.info("Attempting imgbb upload...")
+        image_url = _upload_to_imgbb(image_base64, session_id)
+        log.info("imgbb upload result: %s", image_url or "(empty — see warning above)")
 
         _ensure_header(sheets, sheets_id)
 
@@ -156,7 +147,7 @@ def _do_log_analyse(
             f"{analyse_time:.2f}",
             confidence_flag,
             json.dumps(outfit_analysis, ensure_ascii=False),
-            drive_url,
+            image_url,
         ]
 
         log.info("Attempting Sheets append (analyse row)...")
