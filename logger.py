@@ -1,10 +1,17 @@
 """
-Session logger for Ruhratna AI Stylist.
+Two-stage session logger for Ruhratna AI Stylist.
 
-Uploads the outfit image to Google Drive and appends one row per completed
-session to a Google Sheet. Fully non-blocking: log_session spawns a daemon
-thread and returns immediately, so the user-facing response is never delayed
-and Railway worker shutdown is never held up.
+Stage 1 (log_analyse_session): /analyse uploads the outfit image to Drive
+and appends a new Sessions row with the analyse-side columns filled and
+the match-side columns left blank.
+
+Stage 2 (log_match_session): /match looks up the row by session_id and
+updates only the match-side columns in place.
+
+Both are fully non-blocking: each public function spawns a daemon thread
+and returns immediately. All exceptions are caught and logged — never
+raised to the caller. Logging never delays the user response or holds
+up Railway worker shutdown.
 """
 
 import base64
@@ -28,21 +35,23 @@ SCOPES = [
 
 SHEET_TAB = "Sessions"
 
+# Column layout — analyse-side first (A–H), then match-side (I–N).
+# log_match_session writes only I–N, keyed by session_id in column A.
 HEADER_ROW = [
-    "Session ID",
-    "Timestamp UTC",
-    "Occasion",
-    "Analyse Model",
-    "Match Model",
-    "Analyse Time (s)",
-    "Match Time (s)",
-    "Confidence Flag",
-    "Num Recommendations",
-    "Complete Look Suggested",
-    "Stylist Reading (first 200 chars)",
-    "Drive Image URL",
-    "Outfit Analysis (JSON)",
-    "Recommendations (JSON)",
+    "Session ID",                          # A
+    "Timestamp UTC",                       # B
+    "Occasion",                            # C
+    "Analyse Model",                       # D
+    "Analyse Time (s)",                    # E
+    "Confidence Flag",                     # F
+    "Outfit Analysis (JSON)",              # G
+    "Drive Image URL",                     # H
+    "Match Model",                         # I
+    "Match Time (s)",                      # J
+    "Num Recommendations",                 # K
+    "Complete Look Suggested",             # L
+    "Stylist Reading (first 200 chars)",   # M
+    "Recommendations (JSON)",              # N
 ]
 
 
@@ -52,6 +61,16 @@ def _get_credentials():
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON env var is not set")
     info = json.loads(raw)
     return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+
+def _sheets_client():
+    creds = _get_credentials()
+    return build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
+
+
+def _drive_client():
+    creds = _get_credentials()
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
 def _upload_image(drive, image_base64: str, session_id: str, folder_id: str) -> str:
@@ -89,106 +108,152 @@ def _ensure_header(sheets, spreadsheet_id: str) -> None:
         ).execute()
 
 
-def _append_row(sheets, spreadsheet_id: str, row: list) -> None:
-    sheets.values().append(
+def _find_row_by_session_id(sheets, spreadsheet_id: str, session_id: str):
+    response = sheets.values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"{SHEET_TAB}!A1",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [row]},
+        range=f"{SHEET_TAB}!A:A",
     ).execute()
+    values = response.get("values", [])
+    for idx, row in enumerate(values, start=1):
+        if row and row[0] == session_id:
+            return idx
+    return None
 
 
-def _do_log(
+def _do_log_analyse(
     session_id: str,
     occasion: str,
     image_base64: str,
     outfit_analysis: dict,
-    match_result: dict,
     analyse_model: str,
-    match_model: str,
     analyse_time: float,
-    match_time: float,
     confidence_flag: str,
 ) -> None:
-    log.info("_do_log() ENTERED")
-    log.info("_do_log started for session %s", session_id)
+    log.info("_do_log_analyse started for session %s", session_id)
     try:
         folder_id = os.getenv("DRIVE_FOLDER_ID")
         sheets_id = os.getenv("SHEETS_ID")
         if not folder_id or not sheets_id:
-            log.error("DRIVE_FOLDER_ID or SHEETS_ID not set — skipping session log")
+            log.error("DRIVE_FOLDER_ID or SHEETS_ID not set — skipping analyse log")
             return
 
-        creds = _get_credentials()
+        drive = _drive_client()
+        sheets = _sheets_client()
         log.info("Credentials loaded successfully")
-
-        drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-        sheets = build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
 
         log.info("Attempting Drive upload...")
         drive_url = _upload_image(drive, image_base64, session_id, folder_id)
         log.info("Drive upload success: %s", drive_url)
 
-        recommendations = match_result.get("recommendations", []) if isinstance(match_result, dict) else []
-        complete_look = match_result.get("complete_look", {}) if isinstance(match_result, dict) else {}
-        stylist_reading = match_result.get("stylist_reading", "") if isinstance(match_result, dict) else ""
+        _ensure_header(sheets, sheets_id)
 
+        # Only the analyse-side columns (A–H). I–N stay blank until /match.
         row = [
             session_id,
             datetime.now(timezone.utc).isoformat(),
             occasion,
             analyse_model,
-            match_model,
             f"{analyse_time:.2f}",
-            f"{match_time:.2f}",
             confidence_flag,
+            json.dumps(outfit_analysis, ensure_ascii=False),
+            drive_url,
+        ]
+
+        log.info("Attempting Sheets append (analyse row)...")
+        sheets.values().append(
+            spreadsheetId=sheets_id,
+            range=f"{SHEET_TAB}!A1",
+            valueInputOption="RAW",
+            insertDataOption="INSERT_ROWS",
+            body={"values": [row]},
+        ).execute()
+        log.info("analyse session %s logged", session_id)
+    except Exception:
+        log.exception("failed to log analyse session %s", session_id)
+
+
+def _do_log_match(
+    session_id: str,
+    match_result: dict,
+    match_model: str,
+    match_time: float,
+) -> None:
+    log.info("_do_log_match started for session %s", session_id)
+    try:
+        sheets_id = os.getenv("SHEETS_ID")
+        if not sheets_id:
+            log.error("SHEETS_ID not set — skipping match log")
+            return
+
+        sheets = _sheets_client()
+        log.info("Credentials loaded successfully")
+
+        row_number = _find_row_by_session_id(sheets, sheets_id, session_id)
+        if row_number is None:
+            log.warning("session_id %s not found in %s — skipping match update", session_id, SHEET_TAB)
+            return
+
+        recommendations = match_result.get("recommendations", []) if isinstance(match_result, dict) else []
+        complete_look = match_result.get("complete_look", {}) if isinstance(match_result, dict) else {}
+        stylist_reading = match_result.get("stylist_reading", "") if isinstance(match_result, dict) else ""
+
+        match_row = [
+            match_model,
+            f"{match_time:.2f}",
             len(recommendations),
             bool(complete_look.get("suggested", False)) if isinstance(complete_look, dict) else False,
             (stylist_reading or "")[:200],
-            drive_url,
-            json.dumps(outfit_analysis, ensure_ascii=False),
             json.dumps(recommendations, ensure_ascii=False),
         ]
 
-        log.info("Attempting Sheets write...")
-        _ensure_header(sheets, sheets_id)
-        _append_row(sheets, sheets_id, row)
-        log.info("Sheets write success")
-        log.info("session %s logged", session_id)
+        log.info("Attempting Sheets update (match row %d)...", row_number)
+        sheets.values().update(
+            spreadsheetId=sheets_id,
+            range=f"{SHEET_TAB}!I{row_number}:N{row_number}",
+            valueInputOption="RAW",
+            body={"values": [match_row]},
+        ).execute()
+        log.info("match session %s logged at row %d", session_id, row_number)
     except Exception:
-        log.exception("failed to log session %s", session_id)
+        log.exception("failed to log match session %s", session_id)
 
 
-def log_session(
+def log_analyse_session(
     session_id: str,
     occasion: str,
     image_base64: str,
     outfit_analysis: dict,
-    match_result: dict,
     analyse_model: str,
-    match_model: str,
     analyse_time: float,
-    match_time: float,
     confidence_flag: str,
 ) -> None:
-    """Spawn a daemon thread to log the session. Returns immediately."""
-    log.info("log_session() ENTERED")
-    log.info("log_session() called, spawning thread...")
-    thread = threading.Thread(
-        target=_do_log,
+    """Stage 1 — Drive upload + new Sessions row. Daemon thread, returns immediately."""
+    log.info("log_analyse_session() spawning thread for %s", session_id)
+    threading.Thread(
+        target=_do_log_analyse,
         args=(
             session_id,
             occasion,
             image_base64,
             outfit_analysis,
-            match_result,
             analyse_model,
-            match_model,
             analyse_time,
-            match_time,
             confidence_flag,
         ),
         daemon=True,
-    )
-    thread.start()
+    ).start()
+
+
+def log_match_session(
+    session_id: str,
+    match_result: dict,
+    match_model: str,
+    match_time: float,
+) -> None:
+    """Stage 2 — in-place update of the match columns on the existing row. Daemon thread."""
+    log.info("log_match_session() spawning thread for %s", session_id)
+    threading.Thread(
+        target=_do_log_match,
+        args=(session_id, match_result, match_model, match_time),
+        daemon=True,
+    ).start()

@@ -29,7 +29,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from analyse import analyse_outfit
-from logger import log_session
+from logger import log_analyse_session, log_match_session
 from match import get_product_count, match_jewellery, preload_catalog
 
 load_dotenv()
@@ -51,10 +51,9 @@ def _run_match(
     job_id: str,
     outfit_analysis: dict,
     occasion: str,
-    image_b64: str,
-    analyse_time: float,
+    session_id: str,
 ) -> None:
-    """Background worker: runs match_jewellery, stores the outcome, and fires async session log."""
+    """Background worker: runs match_jewellery, stores the outcome, and fires the stage-2 log."""
     try:
         match_start = time.time()
         result = match_jewellery(outfit_analysis, occasion)
@@ -74,26 +73,19 @@ def _run_match(
                     "error": None,
                 }
 
-        if "error" in result or not image_b64:
+        if "error" in result:
             return
 
-        analyse_model = outfit_analysis.get("model_used", ANALYSE_MODEL) if isinstance(outfit_analysis, dict) else ANALYSE_MODEL
         match_model = result.get("model_used", MATCH_MODEL) if isinstance(result, dict) else MATCH_MODEL
-        confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
 
-        log.info("Calling log_session for job %s", job_id)
-        log_session(
-            session_id=job_id,
-            occasion=occasion,
-            image_base64=image_b64,
-            outfit_analysis=outfit_analysis,
-            match_result=result,
-            analyse_model=analyse_model,
-            match_model=match_model,
-            analyse_time=analyse_time,
-            match_time=match_time,
-            confidence_flag=confidence_flag,
-        )
+        if session_id:
+            log.info("Calling log_match_session for session %s", session_id)
+            log_match_session(
+                session_id=session_id,
+                match_result=result,
+                match_model=match_model,
+                match_time=match_time,
+            )
     except Exception as e:
         with jobs_lock:
             jobs[job_id] = {
@@ -113,6 +105,7 @@ def analyse():
             return jsonify({"error": "image field is required"}), 400
 
         occasion = data.get("occasion", "festive")
+        session_id = str(uuid.uuid4())
 
         analyse_start = time.time()
         outfit_analysis = analyse_outfit(image_b64, occasion)
@@ -124,8 +117,23 @@ def analyse():
         if isinstance(outfit_analysis, dict):
             outfit_analysis["_analyse_time"] = analyse_elapsed
 
+        analyse_model = outfit_analysis.get("model_used", ANALYSE_MODEL) if isinstance(outfit_analysis, dict) else ANALYSE_MODEL
+        confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
+
+        log.info("Calling log_analyse_session for session %s", session_id)
+        log_analyse_session(
+            session_id=session_id,
+            occasion=occasion,
+            image_base64=image_b64,
+            outfit_analysis=outfit_analysis,
+            analyse_model=analyse_model,
+            analyse_time=analyse_elapsed,
+            confidence_flag=confidence_flag,
+        )
+
         return jsonify({
             "success": True,
+            "session_id": session_id,
             "outfit_analysis": outfit_analysis,
         }), 200
 
@@ -143,10 +151,7 @@ def match():
             return jsonify({"error": "outfit_analysis field is required"}), 400
 
         occasion = data.get("occasion", "festive")
-        image_b64 = data.get("image", "")
-        analyse_time = 0.0
-        if isinstance(outfit_analysis, dict):
-            analyse_time = float(outfit_analysis.get("_analyse_time", 0.0) or 0.0)
+        session_id = data.get("session_id", "")
 
         job_id = str(uuid.uuid4())
         with jobs_lock:
@@ -154,7 +159,7 @@ def match():
 
         thread = threading.Thread(
             target=_run_match,
-            args=(job_id, outfit_analysis, occasion, image_b64, analyse_time),
+            args=(job_id, outfit_analysis, occasion, session_id),
             daemon=True,
         )
         thread.start()
