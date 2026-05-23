@@ -36,7 +36,25 @@ Study this outfit image carefully and return ONLY a valid JSON object. No markdo
 
 The occasion has been selected by the user as OCCASION_PLACEHOLDER. Use this exact value for occasion_confirmed field. Do not override it.
 
+BEFORE you describe the outfit, decide whether the image is usable for a jewellery recommendation.
+
+Set confidence_flag to 0 and write a rejection_reason when:
+- No clothing is visible in the image (random object, landscape, food etc.)
+- Multiple people are in the image
+- A person is visible but no clothing is visible at all (face/headshot only)
+- Image is too blurry or dark to read any outfit details
+- Image is a screenshot, graphic, illustration, or cartoon
+- Clothing is partially visible but not enough to make a meaningful jewellery recommendation
+
+Set confidence_flag to 1 when you can confidently analyse the outfit and make meaningful jewellery recommendations from it.
+
+Use your own judgment — if you are unsure whether you have enough information to give a good recommendation, set confidence_flag to 0.
+
+rejection_reason should be warm and friendly, written as if a stylist is speaking to the customer. Maximum 20 words. When confidence_flag is 1, set rejection_reason to "" (empty string).
+
 {
+  "confidence_flag": 1,
+  "rejection_reason": "",
   "outfit_type": "saree / lehenga / anarkali / kurta / salwar suit / western dress / top / indo-western / other",
   "dominant_colour": "main colour in plain English",
   "colour_family": "warm / cool / neutral / jewel-toned / pastel / earthy / dark / bright",
@@ -50,7 +68,7 @@ The occasion has been selected by the user as OCCASION_PLACEHOLDER. Use this exa
   "image_quality": "good / average / poor"
 }
 
-If image is unclear, still return JSON with best attempt and set image_quality to poor."""
+confidence_flag must be an integer 0 or 1. Never use strings, booleans, or any other value. When confidence_flag is 0, still fill the other fields with your best attempt — the app will ignore them and surface rejection_reason to the customer."""
 
 
 def analyse_outfit(image_base64: str, occasion: str) -> dict:

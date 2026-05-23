@@ -118,9 +118,10 @@ def analyse():
             outfit_analysis["_analyse_time"] = analyse_elapsed
 
         analyse_model = outfit_analysis.get("model_used", ANALYSE_MODEL) if isinstance(outfit_analysis, dict) else ANALYSE_MODEL
-        confidence_flag = outfit_analysis.get("confidence_flag", "ok") if isinstance(outfit_analysis, dict) else "ok"
+        confidence_flag = outfit_analysis.get("confidence_flag", 1) if isinstance(outfit_analysis, dict) else 1
+        rejection_reason = outfit_analysis.get("rejection_reason", "") if isinstance(outfit_analysis, dict) else ""
 
-        log.info("Calling log_analyse_session for session %s", session_id)
+        log.info("Calling log_analyse_session for session %s (confidence_flag=%s)", session_id, confidence_flag)
         log_analyse_session(
             session_id=session_id,
             occasion=occasion,
@@ -130,6 +131,17 @@ def analyse():
             analyse_time=analyse_elapsed,
             confidence_flag=confidence_flag,
         )
+
+        if confidence_flag == 0:
+            log.info("Rejecting session %s: %s", session_id, rejection_reason)
+            return jsonify({
+                "success": False,
+                "error": True,
+                "confidence_flag": 0,
+                "rejection_reason": rejection_reason,
+                "session_id": session_id,
+                "outfit_analysis": None,
+            }), 200
 
         return jsonify({
             "success": True,
