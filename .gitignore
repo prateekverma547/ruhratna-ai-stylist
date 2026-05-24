@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 catalog/*.xml
+catalog/catalog_products.json
+catalog/catalog_formatted.txt
 db/
 .DS_Store
 venv/

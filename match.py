@@ -35,10 +35,10 @@ _catalog_text = None
 _product_lookup = None
 
 
-def preload_catalog() -> None:
-    """Load catalog files into module-level cache. Idempotent."""
+def preload_catalog(force: bool = False) -> None:
+    """Load catalog files into module-level cache. Idempotent unless force=True."""
     global _catalog_text, _product_lookup
-    if _catalog_text is not None and _product_lookup is not None:
+    if not force and _catalog_text is not None and _product_lookup is not None:
         return
 
     try:

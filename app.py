@@ -29,6 +29,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from analyse import analyse_outfit
+from catalog import main as refresh_catalog
 from logger import log_analyse_session, log_match_session
 from match import get_product_count, match_jewellery, preload_catalog
 
@@ -42,6 +43,13 @@ ANALYSE_MODEL = os.getenv("ANALYSE_MODEL_PRIMARY")
 MATCH_MODEL = os.getenv("MATCH_MODEL_PRIMARY")
 
 preload_catalog()
+
+try:
+    refresh_catalog()
+    preload_catalog(force=True)
+    log.info("Catalog refreshed from live feed on startup")
+except Exception:
+    log.exception("Startup catalog refresh failed — using committed artifacts as fallback")
 
 jobs = {}
 jobs_lock = threading.Lock()
@@ -201,6 +209,18 @@ def result(job_id):
 
         del jobs[job_id]
         return jsonify(response), 200
+
+
+@app.route("/refresh-catalog", methods=["POST"])
+def refresh_catalog_endpoint():
+    try:
+        refresh_catalog()
+        preload_catalog(force=True)
+        log.info("Catalog manually refreshed via endpoint")
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        log.exception("Manual catalog refresh failed")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])

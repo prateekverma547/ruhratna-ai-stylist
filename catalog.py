@@ -20,7 +20,7 @@ import requests
 
 log = logging.getLogger(__name__)
 
-SOURCE_PATH = "catalog/recommendationeng.xml"
+SOURCE_PATH = "https://ruhratna.com/wp-content/uploads/woo-feed/chatgpt/xml/recommendationeng.xml"
 OUTPUT_JSON = "catalog/catalog_products.json"
 OUTPUT_TEXT = "catalog/catalog_formatted.txt"
 
