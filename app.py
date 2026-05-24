@@ -44,13 +44,6 @@ MATCH_MODEL = os.getenv("MATCH_MODEL_PRIMARY")
 
 preload_catalog()
 
-try:
-    refresh_catalog()
-    preload_catalog(force=True)
-    log.info("Catalog refreshed from live feed on startup")
-except Exception:
-    log.exception("Startup catalog refresh failed — using committed artifacts as fallback")
-
 jobs = {}
 jobs_lock = threading.Lock()
 
