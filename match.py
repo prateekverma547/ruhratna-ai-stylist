@@ -2,8 +2,16 @@
 Jewellery matching (Call 2) for Ruhratna AI Stylist.
 
 Takes the structured outfit analysis from analyse.py plus an occasion,
-asks Gemini to pick 3 complementary pieces from the prepared catalog,
-and returns a stylist response dict.
+asks the model to pick 3-6 complementary pieces from the prepared
+catalog, and returns a stylist response dict.
+
+Primary model: Claude Sonnet 4.6 via Anthropic API (stable latency,
+strict JSON output, good Indian-fashion reasoning).
+Fallback: Gemini 2.5 Flash-lite via google-genai (kept cross-vendor
+so an Anthropic incident doesn't take the whole flow down).
+
+Routing happens in _call_model() based on model-name prefix:
+"claude-*" → Anthropic SDK, "gemini-*" → google-genai SDK.
 """
 
 import json
@@ -11,6 +19,7 @@ import logging
 import os
 import time
 
+from anthropic import Anthropic
 from dotenv import load_dotenv
 from google import genai
 
@@ -19,16 +28,51 @@ load_dotenv()
 log = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 MATCH_MODEL_PRIMARY = os.getenv("MATCH_MODEL_PRIMARY")
 MATCH_MODEL_FALLBACK = os.getenv("MATCH_MODEL_FALLBACK")
 
 CATALOG_TEXT_PATH = "catalog/catalog_formatted.txt"
 CATALOG_JSON_PATH = "catalog/catalog_products.json"
 
+# Cap on Claude visible output. Our prompt produces ~500-900 tokens of JSON;
+# 4096 leaves generous headroom without enabling runaway costs.
+MATCH_MAX_OUTPUT_TOKENS = 4096
+
 client = genai.Client(
     api_key=GEMINI_API_KEY,
     http_options={"api_version": "v1alpha"},
 ) if GEMINI_API_KEY else None
+
+anthropic_client = Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+
+
+def _call_model(model: str, prompt: str) -> str:
+    """Route the request to the right SDK based on model-name prefix.
+
+    Returns the raw response text. Caller handles markdown stripping
+    and JSON parsing.
+    """
+    if model.startswith("claude-"):
+        if anthropic_client is None:
+            raise RuntimeError("ANTHROPIC_API_KEY not set but Claude model requested")
+        response = anthropic_client.messages.create(
+            model=model,
+            max_tokens=MATCH_MAX_OUTPUT_TOKENS,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+    if model.startswith("gemini-"):
+        if client is None:
+            raise RuntimeError("GEMINI_API_KEY not set but Gemini model requested")
+        response = client.models.generate_content(
+            model=model,
+            contents=[prompt],
+            config={"temperature": 0},
+        )
+        return response.text
+    raise ValueError(f"Unknown provider for model: {model}")
 
 
 _catalog_text = None
@@ -192,12 +236,15 @@ def match_jewellery(outfit_analysis: dict, occasion: str) -> dict:
     for model in models_to_try:
         for attempt in range(3):
             try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[prompt],
-                    config={"temperature": 0},
-                )
-                response_text = response.text
+                # === Gemini-only call site (kept commented for rollback reference) ===
+                # response = client.models.generate_content(
+                #     model=model,
+                #     contents=[prompt],
+                #     config={"temperature": 0},
+                # )
+                # response_text = response.text
+                # === Provider-routing call (Claude primary, Gemini fallback) ===
+                response_text = _call_model(model, prompt)
                 break
             except Exception as e:
                 last_error = e

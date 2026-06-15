@@ -35,6 +35,8 @@ from match import get_product_count, match_jewellery, preload_catalog
 
 load_dotenv()
 
+APP_VERSION = "1.1.0"
+
 app = Flask(__name__)
 CORS(app)
 
@@ -220,6 +222,7 @@ def refresh_catalog_endpoint():
 def health():
     return jsonify({
         "status": "ok",
+        "version": APP_VERSION,
         "analyse_model": ANALYSE_MODEL,
         "match_model": MATCH_MODEL,
         "products_loaded": get_product_count(),
