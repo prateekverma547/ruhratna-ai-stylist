@@ -35,7 +35,7 @@ from match import get_product_count, match_jewellery, preload_catalog
 
 load_dotenv()
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 app = Flask(__name__)
 CORS(app)

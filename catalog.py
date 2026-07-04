@@ -76,6 +76,10 @@ def parse_products(xml_text: str) -> list[dict]:
         if price is None:
             continue
 
+        sale_price = _parse_price(_text(node, "sale_price"))
+        if sale_price is not None and sale_price >= price:
+            sale_price = None
+
         categories = [c.strip() for c in category_string.split(">") if c.strip()]
 
         products.append({
@@ -85,6 +89,7 @@ def parse_products(xml_text: str) -> list[dict]:
             "categories": categories,
             "category_string": category_string,
             "price": price,
+            "sale_price": sale_price,
             "image_url": _text(node, "image_link"),
             "product_url": _text(node, "link"),
         })
@@ -96,12 +101,16 @@ def format_for_llm(products: list[dict]) -> str:
     """Render products as a single LLM-friendly string."""
     blocks = []
     for p in products:
+        price_line = f"Price: ₹{int(p['price'])}"
+        sp = p.get("sale_price")
+        if sp is not None:
+            price_line += f" (Sale: ₹{int(sp)})"
         blocks.append(
             f"[ID: {p['id']}]\n"
             f"Title: {p['title']}\n"
             f"Description: {p['description']}\n"
             f"Categories: {p['category_string']}\n"
-            f"Price: ₹{int(p['price'])}"
+            f"{price_line}"
         )
     return "\n\n---\n\n".join(blocks)
 

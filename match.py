@@ -182,6 +182,7 @@ Now return your answer as ONLY a valid JSON object. No markdown. No backticks. N
       "reason": "2 sentences. Specific styling reason.",
       "match_score": 98,
       "price": 1200,
+      "sale_price": 900,
       "image_url": "from catalog",
       "product_url": "from catalog"
     }
@@ -276,8 +277,22 @@ def match_jewellery(outfit_analysis: dict, occasion: str) -> dict:
     for rec in result.get("recommendations", []):
         pid = rec.get("product_id")
         if pid and pid in product_lookup:
-            rec["image_url"] = product_lookup[pid]["image_url"]
-            rec["product_url"] = product_lookup[pid]["product_url"]
+            p = product_lookup[pid]
+            rec["image_url"] = p["image_url"]
+            rec["product_url"] = p["product_url"]
+            rec["price"] = p["price"]
+            rec["sale_price"] = p.get("sale_price")
+
+    complete_look = result.get("complete_look")
+    if isinstance(complete_look, dict) and complete_look.get("suggested"):
+        pieces = complete_look.get("pieces") or []
+        total = 0.0
+        for pid in pieces:
+            if pid in product_lookup:
+                p = product_lookup[pid]
+                sp = p.get("sale_price")
+                total += sp if sp is not None else p["price"]
+        complete_look["combined_price"] = int(total)
 
     return result
 
@@ -314,7 +329,10 @@ if __name__ == "__main__":
                 "#%d [tier %s · %s] — %s (%s%% match)",
                 i, rec.get("tier"), rec.get("type"), rec["title"], rec["match_score"],
             )
-            log.info("     Price: ₹%s", rec["price"])
+            if rec.get("sale_price") is not None:
+                log.info("     Price: ₹%s → Sale: ₹%s", rec["price"], rec["sale_price"])
+            else:
+                log.info("     Price: ₹%s", rec["price"])
             log.info("     Why: %s", rec["reason"])
             log.info("     URL: %s", rec["product_url"])
 
